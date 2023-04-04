@@ -23,18 +23,81 @@
 struct PCB {
   int occupied; // either true or false
   pid_t pid; // process id of this child
+  int simPid;
   int startSeconds; // time when it was forked
   int startNano; // time when it was forked
+  int cpuSeconds;
+  int cpuNano;
+  int termSeconds;
+  int termNano;
 };
 
 struct MessageBuffer {
   long mtype;
-  int durationSec;
+  // int durationSec;
   int durationNano;
 };
 
+struct QueueNode {
+  int pid;
+  struct QueueNode* next;
+};
+
+struct Queue {
+  struct QueueNode* front;
+  struct QueueNode* rear;
+  int size;
+};
+
+void initQueue(struct Queue* q) {
+  q->front = NULL;
+  q->rear = NULL;
+  q->size = 0;
+}
+
+int isQueueEmpty(struct Queue* q) {
+  return q->front == NULL;
+}
+
+void enqueue(struct Queue* q, int pid) {
+  struct QueueNode* newNode = (struct QueueNode*)malloc(sizeof(struct QueueNode));
+  newNode->pid = pid;
+  newNode->next = NULL;
+
+  if (isQueueEmpty(q)) {
+    q->front = newNode;
+    q->rear = newNode;
+  } else {
+    q->rear->next = newNode;
+    q->rear = newNode;
+  }
+
+  q->size++;
+}
+
+int dequeue(struct Queue* q) {
+  if (isQueueEmpty(q)) {
+    return -1; // or some other error code
+  }
+
+  struct QueueNode* frontNode = q->front;
+  int pid = frontNode->pid;
+
+  if (q->front == q->rear) {
+    q->front = NULL;
+    q->rear = NULL;
+  } else {
+    q->front = frontNode->next;
+  }
+
+  free(frontNode);
+  q->size--;
+
+  return pid;
+}
+
 int proc;
-struct PCB processTable[20];
+struct PCB processTable[18];
 int* block;
 int msqid;
 FILE* file;
@@ -47,7 +110,7 @@ static void myhandler(int s) {
 
     // Loop through the process table and send the signal to each process that is currently running.
     int i;
-    for (i = 0; i < 20; i++) {
+    for (i = 0; i < 18; i++) {
       if (processTable[i].occupied == true) {
         kill(processTable[i].pid, s);
       }
@@ -71,7 +134,7 @@ static void myhandler(int s) {
 
     // Loop through the process table and send the signal to each process that is currently running.
     int i;
-    for (i = 0; i < 20; i++) {
+    for (i = 0; i < 18; i++) {
       if (processTable[i].occupied) {
         kill(processTable[i].pid, s);
       }
@@ -100,16 +163,16 @@ static int setupinterrupt(void) { /* set up myhandler for SIGPROF */
 
 static int setupitimer(void) { /* set ITIMER_PROF for 2-second intervals */
   struct itimerval value;
-  value.it_interval.tv_sec = 60;
+  value.it_interval.tv_sec = 3;
   value.it_interval.tv_usec = 0;
   value.it_value = value.it_interval;
   return (setitimer(ITIMER_PROF, &value, NULL));
 }
 
-// This function increments the simulated system clock by 500 nanoseconds.
-void incrementClock(int* clock, int* block) {
-  // Add 500 nanoseconds to the second element of the clock array.
-  clock[1] += 500;
+// This function increments the simulated system clock by the passed in nanoseconds.
+void incrementClock(int* clock, int* block, int nano) {
+  // Add the passed in nanoseconds to the second element of the clock array.
+  clock[1] += nano;
 
   // If the second element of the clock array has exceeded or equalled 1 billion nanoseconds,
   // increment the first element of the clock array by 1 and subtract 1 billion nanoseconds from the second element.
@@ -122,26 +185,51 @@ void incrementClock(int* clock, int* block) {
   memcpy(block, clock, sizeof(int) * 2);
 }
 
-void printPCBTable(int* clock) {
-  printf("OSS PID:%d SysClockS:%d SysClockNano:%d\n", getpid(), clock[0], clock[1]);
-  printf("Process Table:\n");
-  printf("|%10s |%10s |%15s |%15s |\n", "Occupied", "PID", "Start Seconds", "Start Nano");
-  printf("|%10s |%10s |%15s |%15s |\n", "----------", "----------", "---------------", "---------------");
+int* getNextScheduleTime(int* clock, int* lastTimeScheduled, int* maxTimeBetweenProcs) {
+  int* nextTime = (int*)malloc(2 * sizeof(int));  // Allocate memory for the two-element long int array
+  int elapsedSeconds = clock[0] - lastTimeScheduled[0];  // Calculate the elapsed seconds since the last process was scheduled
+  int elapsedNanoseconds = clock[1] - lastTimeScheduled[1];  // Calculate the elapsed nanoseconds since the last process was scheduled
+  int maxSeconds = maxTimeBetweenProcs[0];  // Get the maximum number of seconds between processes
+  int maxNanoseconds = maxTimeBetweenProcs[1];  // Get the maximum number of nanoseconds between processes
+  int maxElapsedNanoseconds = maxSeconds * 1000000000 + maxNanoseconds;  // Convert the maximum time between processes to nanoseconds
+  int elapsedTotalNanoseconds = elapsedSeconds * 1000000000 + elapsedNanoseconds;  // Convert the elapsed time to nanoseconds
+  int remainingNanoseconds = maxElapsedNanoseconds - elapsedTotalNanoseconds;  // Calculate the remaining time in nanoseconds
+  int randomNanoseconds = rand() % remainingNanoseconds;  // Generate a random number of nanoseconds between 0 and the remaining time
+  int totalNanoseconds = elapsedTotalNanoseconds + randomNanoseconds;  // Calculate the total number of nanoseconds until the next process is scheduled
+  nextTime[0] = clock[0] + totalNanoseconds / 1000000000;  // Calculate the number of seconds until the next process is scheduled
+  nextTime[1] = clock[1] + totalNanoseconds % 1000000000;  // Calculate the number of remaining nanoseconds until the next process is scheduled
+  if (nextTime[1] >= 1000000000) {  // Check if the remaining nanoseconds is greater than or equal to 1 second
+    nextTime[0] += 1;  // Increment the number of seconds if necessary
+    nextTime[1] -= 1000000000;  // Subtract 1 second from the remaining nanoseconds
+  }
+  return nextTime;
+}
 
+int processTableIsFull() {
   int i;
-  for (i = 0; i < 20; i++) {
-    printf("|%10s |%10d |%15d |%15d |\n", processTable[i].occupied ? "true" : "false", processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
+  for (i = 0; i < 18; i++) {
+    if (processTable[i].occupied == false) return false;
+  }
+  return true;
+}
+
+bool isFileOverLimit() {
+  // Initialize the line counter
+  int lineCount = 0;
+
+  // Loop through the file until the end is reached or the limit is exceeded
+  char c;
+  while ((c = fgetc(file)) != EOF) {
+    if (c == '\n') {
+      lineCount++;
+    }
+    if (lineCount >= 10000) {
+      return true;
+    }
   }
 
-  // Print the same contents to the output file
-  fprintf(file, "OSS PID:%d SysClockS:%d SysClockNano:%d\n", getpid(), clock[0], clock[1]);
-  fprintf(file, "Process Table:\n");
-  fprintf(file, "|%10s |%10s |%15s |%15s |\n", "Occupied", "PID", "Start Seconds", "Start Nano");
-  fprintf(file, "|%10s |%10s |%15s |%15s |\n", "----------", "----------", "---------------", "---------------");
-
-  for (i = 0; i < 20; i++) {
-    fprintf(file, "|%10s |%10d |%15d |%15d |\n", processTable[i].occupied ? "true" : "false", processTable[i].pid, processTable[i].startSeconds, processTable[i].startNano);
-  }
+  // Return false if the limit was not exceeded
+  return false;
 }
 
 int main(int argc, char* argv[]) {
@@ -212,8 +300,8 @@ int main(int argc, char* argv[]) {
   // Copy the contents of the clock array to the memory block.
   memcpy(block, clock, sizeof(int) * 2);
 
-  int remaining = proc;
-  int running = 0;
+  // int remaining = proc;
+  // int running = 0;
 
   int prevClock[] = { 0, 0 };
 
@@ -229,26 +317,19 @@ int main(int argc, char* argv[]) {
     exit(1);
   }
 
+  int lastTimeScheduled[] = { 0, 0 };
+  int maxTimeBetweenProcs[] = { 0, 1000000 };
+  int nextScheduleTime[] = { 0, 0 };
+
   while (1) {
-    // Increment the simulated system clock by 500 nanoseconds.
-    incrementClock(clock, block);
+    // if (processTableIsFull()) continue;
 
-    // If a second has passed, print the Process Control Block table.
-    if (clock[0] - prevClock[0] >= 1) {
-      printPCBTable(clock);
-      prevClock[0] = clock[0];
-      prevClock[1] = clock[1];
-    }
-    // If 500 million nanoseconds have passed since the last print, print the Process Control Block table.
-    else if (clock[0] == prevClock[0] && clock[1] - prevClock[1] >= 500000000) {
-      printPCBTable(clock);
-      prevClock[0] = clock[0];
-      prevClock[1] = clock[1];
-    }
+    // If it is time to schedule another process
+    if (clock[0] > nextScheduleTime[0] || (clock[0] == nextScheduleTime[0] && clock[1] >= nextScheduleTime[1])) {
+      if (!isFileOverLimit()) {
+        fprintf(file, "OSS: Generating process with PID %d and putting it in queue 0 at time %d:%d\n", 0, clock[0], clock[1]);
+      }
 
-    // If the number of running processes is less than the limit and there are remaining processes to run.
-    if (running < simul && remaining > 0) {
-      // Fork a new process.
       pid_t pid = fork();
 
       // If fork failed.
@@ -259,32 +340,25 @@ int main(int argc, char* argv[]) {
       // If this is the child process.
       else if (pid == 0) {
         // Update the process table for the child process.
-        processTable[proc - remaining].pid = pid;
-        processTable[proc - remaining].occupied = true;
-        processTable[proc - remaining].startSeconds = clock[0];
-        processTable[proc - remaining].startNano = clock[1];
-
-        // Seed the random number generator with the time and the process ID.
-        srand(time(0) + getpid());
-
-        // Generate random seconds and nanoseconds.
-        int randSeconds = (rand() % (limit + 1));
-        int randNano;
-        if (randSeconds < limit) {
-          randNano = (rand() % 1000000001);
-        } else {
-          randNano = 0;
-        }
+        processTable[0].pid = pid;
+        processTable[0].simPid = 0;
+        processTable[0].occupied = true;
+        processTable[0].startSeconds = clock[0];
+        processTable[0].startNano = clock[1];
 
         struct MessageBuffer buf;
 
         buf.mtype = getpid();
-        buf.durationSec = randSeconds;
-        buf.durationNano = randNano;
+        buf.durationNano = 500000;
 
         if (msgsnd(msqid, &buf, sizeof(struct MessageBuffer) - sizeof(long), 0) == -1) {
           printf("msgsnd to %d failed\n", getpid());
           exit(1);
+        }
+
+        incrementClock(clock, block, 1000);
+        if (!isFileOverLimit()) {
+          fprintf(file, "OSS: total time this dispatch was 1000 nanoseconds");
         }
 
         // Execute the worker program with the random seconds and nanoseconds as arguments.
@@ -292,26 +366,52 @@ int main(int argc, char* argv[]) {
       }
       // If this is the parent process.
       else {
-        // Update the process table for the parent process.
-        processTable[proc - remaining].pid = pid;
-        processTable[proc - remaining].occupied = true;
-        processTable[proc - remaining].startSeconds = clock[0];
-        processTable[proc - remaining].startNano = clock[1];
+        struct MessageBuffer recBuf;
 
-        // Increment the number of running processes and decrement the number of remaining processes.
-        running++;
-        remaining--;
+        if (msgrcv(msqid, &recBuf, sizeof(struct MessageBuffer), getpid(), 0) == -1) {
+          perror("failed to receive message from child\n");
+          exit(1);
+        }
+
+        printf("message from child:%d\n", recBuf.durationNano);
+
+        if (recBuf.durationNano == 500000) {
+          if (!isFileOverLimit()) {
+            fprintf(file, "OSS: Receiving that process with PID %d ran for %d nanoseconds\n", 0, recBuf.durationNano);
+          }
+          incrementClock(clock, block, 500000);
+        } else if (recBuf.durationNano < 0) {
+          if (!isFileOverLimit()) {
+            fprintf(file, "OSS: Receiving that process with PID %d ran for %d nanoseconds\n", 0, -1 * recBuf.durationNano);
+            fprintf(file, "OSS: Not using its entire time quantum\n");
+            fprintf(file, "OSS: Putting process with PID %d into blocked queue\n", 0);
+          }
+          incrementClock(clock, block, -1 * recBuf.durationNano);
+        } else {
+          if (!isFileOverLimit()) {
+            fprintf(file, "OSS: Receiving that process with PID %d ran for %d nanoseconds\n", 0, recBuf.durationNano);
+            fprintf(file, "OSS: Process with PID %d terminated early\n", 0);
+          }
+          incrementClock(clock, block, recBuf.durationNano);
+
+          processTable[0].pid = NULL;
+          processTable[0].simPid = NULL;
+          processTable[0].occupied = false;
+          processTable[0].startSeconds = NULL;
+          processTable[0].startNano = NULL;
+        }
+
+        lastTimeScheduled[0] = clock[0];
+        lastTimeScheduled[1] = clock[1];
+        int* next = getNextScheduleTime(clock, lastTimeScheduled, maxTimeBetweenProcs);
+        nextScheduleTime[0] = next[0];
+        nextScheduleTime[1] = next[1];
+        printf("next: %d:%d\n", next[0], next[1]);
       }
-    }
-    // If no more processes to run or running processes exit while loop
-    else if (remaining == 0 && running == 0) {
-      break;
-    }
-    // If the maximum number of simultaneous processes are running wait for a child to die
-    else {
-      int res = waitpid(-1, NULL, WNOHANG);
-      if (res > 0) {
-        running--;
+    } else {
+      // printf("difference: %d:%d\n", nextScheduleTime[0] - lastTimeScheduled[0], nextScheduleTime[1] - lastTimeScheduled[1]);
+      if (!isFileOverLimit()) {
+        fprintf(file, "OSS: Not time to schedule another process\n");
       }
     }
   }

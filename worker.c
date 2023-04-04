@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/msg.h>
 #include <sys/ipc.h>
+#include <time.h>
 
 #include "shared_memory.h"
 
@@ -19,7 +20,7 @@
 
 struct MessageBuffer {
   long mtype;
-  int durationSec;
+  // int durationSec;
   int durationNano;
 };
 
@@ -52,6 +53,19 @@ void terminate(int* block, int clockSec, int clockNano, int quitSec, int quitNan
   exit(1);
 }
 
+int getReturnValue(struct MessageBuffer buf) {
+  srand(time(NULL) + getpid());  // Initialize the random number generator with the current time
+  int r = rand() % 100 + 1;  // Generate a random number between 1 and 100
+
+  if (r >= 1 && r <= 95) {
+    return buf.durationNano;
+  } else if (r >= 96 && r <= 99) {
+    return rand() % (buf.durationNano);
+  } else {  // r == 100
+    return (rand() % (buf.durationNano)) * -1;
+  }
+}
+
 int main(int argc, char* argv[]) {
 
   // set up signal handler for SIGPROF
@@ -80,57 +94,67 @@ int main(int argc, char* argv[]) {
     exit(1);
   }
 
-  // printf("\n*******************%d.%d\n\n", buf.durationSec, buf.durationNano);
+  printf("message to child: %d\nSending value back...\n", buf.durationNano);
 
-  // attach to the shared memory clock initialized in oss.c
-  block = attach_memory_block("README.txt", sizeof(int) * 2);
-  if (block == NULL) {
-    printf("ERROR: couldn't get block\n");
+  struct MessageBuffer sendBuf;
+  sendBuf.mtype = getppid();
+  // buf.durationSec = randSeconds;
+  sendBuf.durationNano = getReturnValue(buf);
+
+  if (msgsnd(msqid, &sendBuf, sizeof(struct MessageBuffer) - sizeof(long), 0) == -1) {
+    printf("msgsnd to %d failed\n", getppid());
     exit(1);
   }
 
-  // store the contents of shared memory into clock array
-  int clock[2];
-  memcpy(clock, block, sizeof(int) * 2);
+  // // attach to the shared memory clock initialized in oss.c
+  // block = attach_memory_block("README.txt", sizeof(int) * 2);
+  // if (block == NULL) {
+  //   printf("ERROR: couldn't get block\n");
+  //   exit(1);
+  // }
 
-  int quitTime[2] = { buf.durationSec + clock[0], buf.durationNano + clock[1] };
-  if (quitTime[1] >= 1000000000) { //check if nano seconds exceed 1 second
-    quitTime[0] += 1;
-    quitTime[1] -= 1000000000;
-  }
+  // // store the contents of shared memory into clock array
+  // int clock[2];
+  // memcpy(clock, block, sizeof(int) * 2);
 
-  printf("WORKER PID:%d PPID:%d SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", getpid(), getppid(), clock[0], clock[1], quitTime[0], quitTime[1]);
-  printf("--Just Starting\n");
+  // int quitTime[2] = { buf.durationSec + clock[0], buf.durationNano + clock[1] };
+  // if (quitTime[1] >= 1000000000) { //check if nano seconds exceed 1 second
+  //   quitTime[0] += 1;
+  //   quitTime[1] -= 1000000000;
+  // }
 
-  // Initialize previous seconds and elapsed seconds
-  int prevSeconds = clock[0];
-  int elapsedSeconds = 0;
+  // printf("WORKER PID:%d PPID:%d SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", getpid(), getppid(), clock[0], clock[1], quitTime[0], quitTime[1]);
+  // printf("--Just Starting\n");
 
-  // Loop indefinitely
-  while (true) {
+  // // Initialize previous seconds and elapsed seconds
+  // int prevSeconds = clock[0];
+  // int elapsedSeconds = 0;
 
-    // Get current clock value from shared memory block
-    memcpy(clock, block, sizeof(int) * 2);
+  // // Loop indefinitely
+  // while (true) {
 
-    // Check if current seconds is greater than termination seconds
-    if (clock[0] > quitTime[0])
-      terminate(block, clock[0], clock[1], quitTime[0], quitTime[1]);
+  //   // Get current clock value from shared memory block
+  //   memcpy(clock, block, sizeof(int) * 2);
 
-    // Check if current seconds is equal to termination seconds and current nanoseconds is greater than or equal to termination nanoseconds
-    if (clock[0] == quitTime[0] && clock[1] >= quitTime[1])
-      terminate(block, clock[0], clock[1], quitTime[0], quitTime[1]);
+  //   // Check if current seconds is greater than termination seconds
+  //   if (clock[0] > quitTime[0])
+  //     terminate(block, clock[0], clock[1], quitTime[0], quitTime[1]);
 
-    // Check if current seconds has changed since last loop iteration
-    if (clock[0] != prevSeconds) {
-      // Update previous seconds and elapsed seconds
-      prevSeconds = clock[0];
-      elapsedSeconds += 1;
+  //   // Check if current seconds is equal to termination seconds and current nanoseconds is greater than or equal to termination nanoseconds
+  //   if (clock[0] == quitTime[0] && clock[1] >= quitTime[1])
+  //     terminate(block, clock[0], clock[1], quitTime[0], quitTime[1]);
 
-      // Print worker information and elapsed time
-      printf("WORKER PID:%d PPID:%d SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", getpid(), getppid(), clock[0], clock[1], quitTime[0], quitTime[1]);
-      printf("--%d seconds have passed since starting\n", elapsedSeconds);
-    }
-  }
+  //   // Check if current seconds has changed since last loop iteration
+  //   if (clock[0] != prevSeconds) {
+  //     // Update previous seconds and elapsed seconds
+  //     prevSeconds = clock[0];
+  //     elapsedSeconds += 1;
+
+  //     // Print worker information and elapsed time
+  //     printf("WORKER PID:%d PPID:%d SysClockS:%d SysClockNano:%d TermTimeS:%d TermTimeNano:%d\n", getpid(), getppid(), clock[0], clock[1], quitTime[0], quitTime[1]);
+  //     printf("--%d seconds have passed since starting\n", elapsedSeconds);
+  //   }
+  // }
 
 
   return 0;
