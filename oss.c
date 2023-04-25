@@ -215,6 +215,8 @@ int processTableIsFull() {
 
 bool isFileOverLimit() {
   // Initialize the line counter
+  file = fopen("output.txt", "r");
+
   int lineCount = 0;
 
   // Loop through the file until the end is reached or the limit is exceeded
@@ -224,11 +226,13 @@ bool isFileOverLimit() {
       lineCount++;
     }
     if (lineCount >= 10000) {
+      fclose(file);
       return true;
     }
   }
 
   // Return false if the limit was not exceeded
+  fclose(file);
   return false;
 }
 
@@ -327,7 +331,9 @@ int main(int argc, char* argv[]) {
     // If it is time to schedule another process
     if (clock[0] > nextScheduleTime[0] || (clock[0] == nextScheduleTime[0] && clock[1] >= nextScheduleTime[1])) {
       if (!isFileOverLimit()) {
+        file = fopen(outputFile, "a+");
         fprintf(file, "OSS: Generating process with PID %d and putting it in queue 0 at time %d:%d\n", 0, clock[0], clock[1]);
+        fclose(file);
       }
 
       pid_t pid = fork();
@@ -358,7 +364,9 @@ int main(int argc, char* argv[]) {
 
         incrementClock(clock, block, 1000);
         if (!isFileOverLimit()) {
-          fprintf(file, "OSS: total time this dispatch was 1000 nanoseconds");
+          file = fopen(outputFile, "a+");
+          fprintf(file, "OSS: total time this dispatch was 1000 nanoseconds\n");
+          fclose(file);
         }
 
         // Execute the worker program with the random seconds and nanoseconds as arguments.
@@ -377,20 +385,26 @@ int main(int argc, char* argv[]) {
 
         if (recBuf.durationNano == 500000) {
           if (!isFileOverLimit()) {
+            file = fopen(outputFile, "a+");
             fprintf(file, "OSS: Receiving that process with PID %d ran for %d nanoseconds\n", 0, recBuf.durationNano);
+            fclose(file);
           }
           incrementClock(clock, block, 500000);
         } else if (recBuf.durationNano < 0) {
           if (!isFileOverLimit()) {
+            file = fopen(outputFile, "a+");
             fprintf(file, "OSS: Receiving that process with PID %d ran for %d nanoseconds\n", 0, -1 * recBuf.durationNano);
             fprintf(file, "OSS: Not using its entire time quantum\n");
             fprintf(file, "OSS: Putting process with PID %d into blocked queue\n", 0);
+            fclose(file);
           }
           incrementClock(clock, block, -1 * recBuf.durationNano);
         } else {
           if (!isFileOverLimit()) {
+            file = fopen(outputFile, "a+");
             fprintf(file, "OSS: Receiving that process with PID %d ran for %d nanoseconds\n", 0, recBuf.durationNano);
             fprintf(file, "OSS: Process with PID %d terminated early\n", 0);
+            fclose(file);
           }
           incrementClock(clock, block, recBuf.durationNano);
 
@@ -409,10 +423,12 @@ int main(int argc, char* argv[]) {
         printf("next: %d:%d\n", next[0], next[1]);
       }
     } else {
-      // printf("difference: %d:%d\n", nextScheduleTime[0] - lastTimeScheduled[0], nextScheduleTime[1] - lastTimeScheduled[1]);
-      if (!isFileOverLimit()) {
-        fprintf(file, "OSS: Not time to schedule another process\n");
-      }
+      // if (!isFileOverLimit()) {
+      //   file = fopen(outputFile, "a+");
+      //   fprintf(file, "OSS: Not time to schedule another process\n");
+      //   fclose(file);
+      // }
+      incrementClock(clock, block, 10000);
     }
   }
 
@@ -430,3 +446,6 @@ int main(int argc, char* argv[]) {
 
   return 0;
 }
+
+//////////////////////////////////////////////////////////////////////////////
+
